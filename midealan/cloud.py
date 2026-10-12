@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from asyncio import Lock
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
@@ -22,6 +23,7 @@ from .security import (
     MeijuCloudSecurity,
     MideaAirSecurity,
     MSmartCloudSecurity,
+    ToshibaIOLifeSecurity,
 )
 
 SN8_MIN_SERIAL_LENGTH = 17
@@ -81,6 +83,17 @@ SUPPORTED_CLOUDS: dict[str, Any] = {
         "app_id": "1005",
         "app_key": "434a209a5ce141c3b726de067835d7f0",
         "api_url": "https://mapp.appsmb.com",  # codespell:ignore
+    },
+    "Toshiba Iolife": {
+        "class_name": "ToshibaIOLife",
+        "app_id": "1203",
+        "app_key": "09c4d09f0da1513bb62dc7b6b0af9c11",
+        "api_url": "https://app.iolife.toshiba-lifestyle.com",
+        "app_version": "3.4.0",
+        # The API does not return an enterpriseCode, so this is the fallback.
+        # 0x0008 is Toshiba's code: the app ships it as APP_ENTERPRISE
+        # and it prefixes every T_0008_* protocol file.
+        "manufacturer_code": "0008",
     },
 }
 
@@ -1049,12 +1062,13 @@ class MideaAirCloud(MideaCloud):
         session: ClientSession,
         account: str,
         password: str,
+        security: CloudSecurity | None = None,
     ) -> None:
         """Initialize Midea Air Cloud."""
         cloud_data = cast("dict[str, Any]", SUPPORTED_CLOUDS[cloud_name])
         super().__init__(
             session=session,
-            security=MideaAirSecurity(login_key=cloud_data["app_key"]),
+            security=security or MideaAirSecurity(login_key=cloud_data["app_key"]),
             app_id=cloud_data["app_id"],
             app_key=cloud_data["app_key"],
             account=account,
@@ -1243,6 +1257,95 @@ class MideaAirCloud(MideaCloud):
                     async with aiofiles.open(fnm, "w") as fp:
                         await fp.write(stream)
         return str(fnm) if fnm else None
+
+
+class ToshibaIOLife(MideaAirCloud):
+    """Toshiba IOLife cloud."""
+
+    def __init__(
+        self,
+        cloud_name: str,
+        session: ClientSession,
+        account: str,
+        password: str,
+    ) -> None:
+        """Initialize Toshiba IOLife cloud."""
+        cloud_data = cast("dict[str, Any]", SUPPORTED_CLOUDS[cloud_name])
+        super().__init__(
+            cloud_name=cloud_name,
+            session=session,
+            account=account,
+            password=password,
+            security=ToshibaIOLifeSecurity(cloud_data["app_key"]),
+        )
+        self._app_version: str = cloud_data["app_version"]
+        self._manufacturer_code: str = cloud_data["manufacturer_code"]
+
+    def _decrypt_sn(self, encrypted_sn: str) -> str:
+        """Decrypt SN blob from home/page/list/info."""
+        if not self._access_token or not encrypted_sn:
+            return ""
+        try:
+            return cast("ToshibaIOLifeSecurity", self._security).decrypt_appliance_sn(
+                encrypted_sn,
+                self._access_token,
+            )
+        except (ValueError, UnicodeDecodeError):
+            _LOGGER.debug("Failed to decrypt appliance SN")
+            return ""
+
+    async def list_appliances(
+        self,
+        home_id: str | None = None,  # noqa: ARG002
+    ) -> dict[int, dict[str, Any]]:
+        """Get Toshiba IOLife devices."""
+        data = self._make_general_data()
+        data["appVersion"] = self._app_version
+        # home/page/list/info returns result as a bare list, not {list: [...]}
+        page_list: Any = await self._api_request(
+            endpoint="/v1/appliance/user/home/page/list/info",
+            data=data,
+        )
+        if not isinstance(page_list, list):
+            return {}
+
+        appliances: dict[int, dict[str, Any]] = {}
+        for appliance in page_list:
+            if not isinstance(appliance, Mapping):
+                continue
+            # Skip virtual/batch devices.
+            if (
+                appliance.get("type") == "0x_BATCH_AC"
+                or appliance.get("id") == "virtual_ag_0xAC"
+            ):
+                continue
+            try:
+                device_id = int(appliance["id"])
+                device_type = int(appliance["type"], 16)
+            except (KeyError, TypeError, ValueError):
+                _LOGGER.debug("Skipping malformed appliance entry: %s", appliance)
+                continue
+            try:
+                model_number = int(appliance.get("modelNumber", 0))
+            except (TypeError, ValueError):
+                model_number = 0
+            sn = self._decrypt_sn(str(appliance.get("sn") or ""))
+            sn8 = sn[9:17] if len(sn) > SN8_MIN_SERIAL_LENGTH else ""
+            appliances[device_id] = {
+                "name": appliance.get("name"),
+                "type": device_type,
+                "sn": sn,
+                "sn8": sn8,
+                "model_number": model_number,
+                "manufacturer_code": appliance.get(
+                    "enterpriseCode",
+                    self._manufacturer_code,
+                ),
+                "model": sn8,
+                "online": appliance.get("onlineStatus") == "1",
+            }
+
+        return appliances
 
 
 def get_midea_cloud(
