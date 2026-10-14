@@ -19,13 +19,21 @@ from midealan.device import (
     NoSupportedProtocol,
 )
 from midealan.exceptions import SocketException
-from midealan.message import MessageType
+from midealan.message import ListTypes, MessageRequest, MessageType
 
 
 class _DictDevice(MideaDevice):
     """MideaDevice subclass exposing a class-level dict for lookup tests."""
 
     modes: ClassVar[dict[int, str]] = {1: "auto", 2: "cool"}
+
+
+class _TestQuery(MessageRequest):
+    """Concrete query used by refresh_status matching tests."""
+
+    @property
+    def _body(self) -> bytearray:
+        return bytearray()
 
 
 def test_get_dict_key_by_value() -> None:
@@ -626,6 +634,94 @@ class TestMideaDevice:
         ):
             self.device._socket = socket_mock
             self.device.refresh_status(True)
+
+    def test_checked_query_waits_for_matching_reply(self) -> None:
+        """A matching message/body type completes a checked query."""
+        socket_mock = MagicMock()
+        self.device._appliance_query = False
+        cmd = _TestQuery(
+            DeviceType.C3,
+            ProtocolVersion.V1,
+            MessageType.query,
+            ListTypes.X05,
+        )
+
+        def parse(_msg: bytes) -> MessageResult:
+            self.device._last_message_identifiers = [
+                (int(MessageType.query), int(ListTypes.X05)),
+            ]
+            self.device._last_message_identifiers_valid = True
+            return MessageResult.SUCCESS
+
+        with (
+            patch.object(self.device, "build_query", return_value=[cmd]),
+            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])]),
+            patch.object(self.device, "build_send", return_value=None),
+            patch.object(self.device, "parse_message", side_effect=parse),
+        ):
+            self.device._socket = socket_mock
+            self.device.refresh_status(True)
+
+        assert cmd.__class__.__name__ not in self.device._unsupported_protocol
+
+    def test_checked_query_ignores_unrelated_push_reply(self) -> None:
+        """An unsolicited push must not make a different query look supported."""
+        socket_mock = MagicMock()
+        self.device._appliance_query = False
+        cmd = _TestQuery(
+            DeviceType.C3,
+            ProtocolVersion.V1,
+            MessageType.query,
+            ListTypes.X05,
+        )
+
+        def parse(_msg: bytes) -> MessageResult:
+            self.device._last_message_identifiers = [
+                (int(MessageType.notify1), int(ListTypes.X00)),
+            ]
+            self.device._last_message_identifiers_valid = True
+            return MessageResult.SUCCESS
+
+        with (
+            patch.object(self.device, "build_query", return_value=[cmd]),
+            patch.object(
+                socket_mock,
+                "recv",
+                side_effect=[bytearray([0x0]), TimeoutError()],
+            ),
+            patch.object(self.device, "build_send", return_value=None),
+            patch.object(self.device, "parse_message", side_effect=parse),
+        ):
+            self.device._socket = socket_mock
+            with pytest.raises(NoSupportedProtocol):
+                self.device.refresh_status(True)
+
+        assert cmd.__class__.__name__ in self.device._unsupported_protocol
+
+    def test_query_identifier_rejects_non_integer_body_type(self) -> None:
+        """A request without protocol-like ids keeps legacy mock behavior."""
+        cmd = MagicMock()
+        cmd.message_type = MessageType.query
+        cmd.body_type = "not-a-body-type"
+
+        assert self.device._query_message_identifier(cmd) is None
+
+    def test_await_query_reply_uses_overall_deadline(self) -> None:
+        """Continuous unrelated messages cannot extend the query wait forever."""
+        socket_mock = MagicMock()
+        cmd = _TestQuery(
+            DeviceType.C3,
+            ProtocolVersion.V1,
+            MessageType.query,
+            ListTypes.X05,
+        )
+
+        with patch("midealan.device.time.monotonic", side_effect=[100.0, 106.0]):
+            self.device._socket = socket_mock
+            with pytest.raises(TimeoutError):
+                self.device._await_query_reply(cmd)
+
+        socket_mock.recv.assert_not_called()
 
     def test_build_init_query_prepended_before_status_queries(self) -> None:
         """Init queries run after the appliance query and before status queries.

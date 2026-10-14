@@ -29,6 +29,7 @@ from .security import (
 MIN_AUTH_RESPONSE = 20
 MIN_MSG_LENGTH = 56
 MESSAGE_TYPE_INDEX = 9  # offset of the message-type byte in the 10-byte header
+BODY_TYPE_INDEX = 10  # offset of the body-type byte after the 10-byte header
 MIN_V2_FACTUAL_MSG_LENGTH = 6
 RESPONSE_TIMEOUT = 12  # main loop socket recv timeout, 12 * 10s = 120s
 SOCKET_TIMEOUT = 10  # socket connection default timeout
@@ -38,6 +39,8 @@ QUERY_TIMEOUT = (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+MessageIdentifier = tuple[int, int | None]
 
 
 class AuthException(Exception):
@@ -123,6 +126,8 @@ class MideaDevice(threading.Thread):
         self._message_protocol_version: int = 0
         self._updates: list[Callable[[dict[str, Any]], None]] = []
         self._unsupported_protocol: list[str] = []
+        self._last_message_identifiers: list[MessageIdentifier] = []
+        self._last_message_identifiers_valid = False
         self._is_run: bool = False
         self._available = False
         self._appliance_query = True
@@ -432,32 +437,80 @@ class MideaDevice(threading.Thread):
         msg = PacketBuilder(self._device_id, data).finalize()
         self.send_message(msg, query=query)
 
-    def _await_query_reply(self) -> None:
+    def _query_message_identifier(
+        self,
+        cmd: MessageRequest,
+    ) -> MessageIdentifier | None:
+        """Return the expected reply identifier for a request."""
+        message_type = getattr(cmd, "message_type", None)
+        body_type = getattr(cmd, "body_type", None)
+        if not isinstance(message_type, int):
+            return None
+        if body_type is not None and not isinstance(body_type, int):
+            return None
+        return int(message_type), int(body_type) if body_type is not None else None
+
+    def _record_message_identifier(self, msg: bytearray) -> None:
+        """Record the message and body type decoded from one UART payload."""
+        if len(msg) <= MESSAGE_TYPE_INDEX:
+            return
+        body_type = msg[BODY_TYPE_INDEX] if len(msg) > BODY_TYPE_INDEX else None
+        self._last_message_identifiers.append((msg[MESSAGE_TYPE_INDEX], body_type))
+
+    def _query_reply_matches(self, cmd: MessageRequest) -> bool:
+        """Check whether the last parsed frame contains this query's reply."""
+        expected = self._query_message_identifier(cmd)
+        if expected is None:
+            return True
+        if not self._last_message_identifiers_valid:
+            # Unit tests often mock parse_message() directly, so there is no
+            # decoded payload metadata to inspect.
+            return True
+        return expected in self._last_message_identifiers
+
+    def _await_query_reply(self, cmd: MessageRequest) -> None:
         """Block until the current query is answered (checked pass only).
 
-        Loops over socket reads until parse_message reports SUCCESS, then
-        restores SOCKET_TIMEOUT. A PADDING result keeps reading; any other
-        result raises ResponseException. A missing socket or a closed peer
-        raises to the connect/main loop. TimeoutError from recv propagates to
-        the caller, which records the query as unsupported.
+        Loops over socket reads until parse_message reports SUCCESS for a frame
+        whose message/body type matches the in-flight query. Unrelated push
+        frames are still parsed and can update attributes, but they do not make
+        protocol detection treat the query as supported. A missing socket,
+        closed peer, timeout, or parse error propagates to the caller.
         """
-        while True:
-            if not self._socket:
-                _LOGGER.debug("[%s] device socket is none", self._device_id)
-                # raise exception to connect/main loop
-                raise SocketException
-            msg = self._socket.recv(512)
-            if len(msg) == 0:
-                raise ConnectionResetError("Connection closed by peer.")
-            result = self.parse_message(msg)
-            # Prevent infinite loop
-            if result == MessageResult.SUCCESS:
-                break
-            if result == MessageResult.PADDING:
-                continue
-            raise ResponseException
-        # recovery SOCKET_TIMEOUT after recv msg
-        self._socket.settimeout(SOCKET_TIMEOUT)
+        deadline = time.monotonic() + QUERY_TIMEOUT
+        try:
+            while True:
+                if not self._socket:
+                    _LOGGER.debug("[%s] device socket is none", self._device_id)
+                    # raise exception to connect/main loop
+                    raise SocketException
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                self._socket.settimeout(remaining)
+                msg = self._socket.recv(512)
+                if len(msg) == 0:
+                    raise ConnectionResetError("Connection closed by peer.")
+                self._last_message_identifiers = []
+                self._last_message_identifiers_valid = False
+                result = self.parse_message(msg)
+                if result == MessageResult.SUCCESS:
+                    if self._query_reply_matches(cmd):
+                        break
+                    _LOGGER.debug(
+                        "[%s] Ignoring non-matching reply for %s: %s",
+                        self._device_id,
+                        cmd,
+                        self._last_message_identifiers,
+                    )
+                    continue
+                if result == MessageResult.PADDING:
+                    continue
+                raise ResponseException
+        finally:
+            # recovery SOCKET_TIMEOUT after recv msg
+            if self._socket:
+                self._socket.settimeout(SOCKET_TIMEOUT)
 
     def _advance_query_stage(
         self,
@@ -586,7 +639,7 @@ class MideaDevice(threading.Thread):
                 # init check_protocol, skip timeout exception
                 if check_protocol:
                     try:
-                        self._await_query_reply()
+                        self._await_query_reply(cmd)
                     # only catch TimoutError for check_protocol
                     # unexpected exception in recv/settimeout, catch by main loop
                     except TimeoutError:
@@ -687,6 +740,8 @@ class MideaDevice(threading.Thread):
 
     def parse_message(self, msg: bytes) -> MessageResult:
         """Parse message."""
+        self._last_message_identifiers = []
+        self._last_message_identifiers_valid = True
         if self._device_protocol_version == ProtocolVersion.V3:
             messages, self._buffer = self._security.decode_8370(self._buffer + msg)
         else:
@@ -705,6 +760,7 @@ class MideaDevice(threading.Thread):
                 if payload_len % 16 == 0:
                     decrypted: bytearray = self._security.aes_decrypt(cryptographic)
                     try:
+                        self._record_message_identifier(decrypted)
                         cont = True
                         if self._appliance_query:
                             cont = self.pre_process_message(decrypted)
