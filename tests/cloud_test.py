@@ -2436,7 +2436,6 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
             )
 
 
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cloud_name", ["SmartHome", "美的美居", "TSmartLife"])
 @pytest.mark.parametrize(
