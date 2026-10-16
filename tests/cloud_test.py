@@ -2499,6 +2499,150 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
             },
         }
 
+    async def test_download_lua_uses_inherited_smarthome_implementation(
+        self,
+    ) -> None:
+        """TSmartLifeCloud.download_lua uses SmartHomeCloud's implementation.
+
+        Exercises the inherited code path directly via a patched
+        `_api_request`/`_session.get` -- no login() call, no real or
+        fixture-derived credentials. The "encrypted" lua text is produced
+        with the library's own account-independent "fixed key" AES helper,
+        so this fixture is entirely self-consistent and contains no real
+        device/account data. The mocked API request is checked as well as
+        the decryption and file-writing path.
+        """
+        SUPPORTED_CLOUDS["TSmartLife"].update(
+            {
+                "app_id": "test_only_app_id_not_real",
+                "app_key": "test_only_app_key_not_real",
+                "iot_key": "test_only_iot_key_not_real",
+                "hmac_key": "test_only_hmac_key_not_real",
+            },
+        )
+        cloud = get_midea_cloud(
+            "TSmartLife",
+            session=Mock(),
+            account="account",
+            password="password",
+        )
+        assert isinstance(cloud, SmartHomeCloud)
+
+        fake_lua_source = "function test() return 1 end"
+        encrypted_hex = cloud._security.aes_encrypt_with_fixed_key(
+            fake_lua_source.encode("ascii"),
+        ).hex()
+
+        get_response = Mock()
+        get_response.status = 200
+        get_response.text = AsyncMock(return_value=encrypted_hex)
+        fake_session = Mock()
+        fake_session.get = AsyncMock(return_value=get_response)
+        cloud._session = fake_session
+
+        api_request = AsyncMock(
+            return_value={
+                "url": "https://example.invalid/fake.lua",
+                "fileName": "fake_0xCA.lua",
+            },
+        )
+        with (
+            TemporaryDirectory() as tmpdir,
+            patch.object(
+                cloud,
+                "_api_request",
+                api_request,
+            ),
+        ):
+            file = await cloud.download_lua(
+                tmpdir,
+                0xCA,
+                "0000000000000000",
+                model_number="310A079W",
+            )
+            assert file is not None
+            file_path = Path(file)
+            assert Path.exists(file_path)
+            assert file_path.read_text() == (  # noqa: ASYNC240
+                'local bit = require "bit"\n' + fake_lua_source
+            )
+            Path.unlink(file_path)
+            api_request.assert_awaited_once()
+            request = api_request.await_args
+            assert request is not None
+            assert request.kwargs["endpoint"] == "/v2/luaEncryption/luaGet"
+            request_data = request.kwargs["data"]
+            assert request_data["applianceMFCode"] == "0000"
+            assert request_data["applianceType"] == "0xca"
+            assert request_data["modelNumber"] == "310A079W"
+            assert request_data["encryptedType"] == "2"
+            assert "encryptedType " not in request_data
+            fake_session.get.assert_awaited_once_with(
+                "https://example.invalid/fake.lua",
+                timeout=ClientTimeout(10),
+            )
+
+    async def test_download_plugin_uses_inherited_smarthome_implementation(
+        self,
+    ) -> None:
+        """TSmartLifeCloud.download_plugin reuses SmartHomeCloud's method.
+
+        Same isolation approach as the download_lua test above: patches
+        `_api_request` directly, no login() call, no real credentials.
+        download_plugin writes the response body as-is (no decryption), so
+        a plain placeholder byte string is sufficient here.
+        """
+        SUPPORTED_CLOUDS["TSmartLife"].update(
+            {
+                "app_id": "test_only_app_id_not_real",
+                "app_key": "test_only_app_key_not_real",
+                "iot_key": "test_only_iot_key_not_real",
+                "hmac_key": "test_only_hmac_key_not_real",
+            },
+        )
+        cloud = get_midea_cloud(
+            "TSmartLife",
+            session=Mock(),
+            account="account",
+            password="password",
+        )
+        assert isinstance(cloud, SmartHomeCloud)
+
+        get_response = Mock()
+        get_response.status = 200
+        get_response.read = AsyncMock(return_value=b"fake plugin zip content")
+        fake_session = Mock()
+        fake_session.get = AsyncMock(return_value=get_response)
+        cloud._session = fake_session
+
+        with (
+            TemporaryDirectory() as tmpdir,
+            patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(
+                    return_value={
+                        "result": [
+                            {"url": "https://example.invalid/fake_plugin.zip"},
+                        ],
+                    },
+                ),
+            ),
+        ):
+            file = await cloud.download_plugin(
+                tmpdir,
+                0xCA,
+                "0000CA000000000000000000",
+            )
+            assert file is not None
+            file_path = Path(file)
+            assert Path.exists(file_path)
+            assert file_path.read_bytes() == b"fake plugin zip content"  # noqa: ASYNC240
+            Path.unlink(file_path)
+            fake_session.get.assert_awaited_once_with(
+                "https://example.invalid/fake_plugin.zip",
+            )
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cloud_name", ["SmartHome", "美的美居", "TSmartLife"])
