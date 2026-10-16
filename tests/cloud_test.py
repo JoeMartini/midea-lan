@@ -2369,6 +2369,9 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
             assert file is not None
             file_path = Path(file)
             assert Path.exists(file_path)
+            assert file_path.read_text() == (  # noqa: ASYNC240
+                'local bit = require "bit"\n' + fake_lua_source
+            )
             Path.unlink(file_path)
             fake_session.get.assert_awaited_once_with(
                 "https://example.invalid/fake.lua",
@@ -2430,6 +2433,7 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
             assert file is not None
             file_path = Path(file)
             assert Path.exists(file_path)
+            assert file_path.read_bytes() == b"fake plugin zip content"  # noqa: ASYNC240
             Path.unlink(file_path)
             fake_session.get.assert_awaited_once_with(
                 "https://example.invalid/fake_plugin.zip",
