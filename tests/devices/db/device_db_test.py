@@ -244,7 +244,7 @@ class TestMideaDBDevice:
 
     @pytest.mark.parametrize(
         ("model", "subtype"),
-        [("other", 13145), ("38131140", 13146), ("38132386", 0)],
+        [("other", 13145), ("38131140", 13146), ("38132386", 1)],
     )
     def test_unverified_profiles_keep_legacy_attributes(
         self,
@@ -288,6 +288,70 @@ class TestMideaDBDevice:
                 )
                 == 30
             )
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("38132386", None), ("marketing name", "38132386")],
+    )
+    def test_v41_profile_decodes_read_only_status(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Decode v41 status for model or SN8 without exposing controls."""
+        device = MideaDBDevice(
+            customize="",
+            **device_args(model, 0, sn8=sn8),
+        )
+        body = bytearray(DB_BODY)
+        body[4], body[7], body[8] = (0x6F, 0x08, 0x07)
+        device.process_message(frame(body))
+        assert device.get_attribute(DeviceAttributes.program) == "greatwaves"
+        assert device.get_attribute(DeviceAttributes.temperature) == "90"
+        assert device.get_attribute(DeviceAttributes.dehydration_speed) == "1600"
+        assert DeviceAttributes.program_control not in device.attributes
+        assert DeviceAttributes.temperature_control not in device.attributes
+        assert DeviceAttributes.spin_speed_control not in device.attributes
+        assert DeviceAttributes.rinse_count not in device.attributes
+        assert DeviceAttributes.wash_time_control not in device.attributes
+        assert DeviceAttributes.forget_free not in device.attributes
+        assert DeviceAttributes.appointment_control_supported not in device.attributes
+        assert device.get_parameter_options(DeviceAttributes.program_control) == []
+        for attr in (DeviceAttributes.power, DeviceAttributes.start):
+            with (
+                patch.object(device, "build_send") as send,
+                pytest.raises(ValueWrongType, match="read-only"),
+            ):
+                device.set_attribute(attr, True)
+            send.assert_not_called()
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueWrongType),
+        ):
+            device.set_attribute(DeviceAttributes.temperature_control, "50")
+        send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("model", "subtype", "temperature"),
+        [
+            ("other", 0, 0x08),
+            ("other", 0, 0x09),
+            ("38131140", 13145, 0x08),
+            ("38131140", 13145, 0x09),
+        ],
+    )
+    def test_v41_temperature_values_are_profile_scoped(
+        self,
+        model: str,
+        subtype: int,
+        temperature: int,
+    ) -> None:
+        """Keep v41-only temperature codes raw on unrelated DB profiles."""
+        device = MideaDBDevice(customize="", **device_args(model, subtype))
+        body = bytearray(DB_BODY)
+        body[7] = temperature
+        device.process_message(frame(body))
+        assert device.get_attribute(DeviceAttributes.temperature) == temperature
 
     def test_verified_response_updates_control_attributes(self) -> None:
         """Publish decoded controls and the profile-specific program name together."""

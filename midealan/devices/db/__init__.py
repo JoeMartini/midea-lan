@@ -11,7 +11,11 @@ from midealan.exceptions import ValueWrongType
 from .message import (
     PROFILE_MODEL,
     PROFILE_SUBTYPE,
+    PROFILE_V41_MODEL,
+    PROFILE_V41_SUBTYPE,
     PROGRAMS,
+    V41_PROGRAMS,
+    V41_TEMPERATURES,
     DBControls,
     MessageDBResponse,
     MessagePower,
@@ -251,6 +255,13 @@ class MideaDBDevice(MideaDevice):
             },
         )
 
+        is_v41 = self.subtype == PROFILE_V41_SUBTYPE and PROFILE_V41_MODEL in (
+            self.model,
+            self.sn8,
+        )
+        self._is_v41_profile = is_v41
+        self._profile_programs = V41_PROGRAMS if is_v41 else {}
+        self._profile_temperatures = V41_TEMPERATURES if is_v41 else {}
         self._controls = (
             DBControls()
             if self.subtype == PROFILE_SUBTYPE
@@ -301,14 +312,17 @@ class MideaDBDevice(MideaDevice):
                 # parse program
                 elif attr == DeviceAttributes.program:
                     self._attributes[DeviceAttributes.program] = (
-                        self._program | PROGRAMS
-                        if self._controls is not None
-                        else self._program
+                        self._program
+                        | self._profile_programs
+                        | (PROGRAMS if self._controls is not None else {})
                     ).get(value, value)
                 # parse temperature
                 elif attr == DeviceAttributes.temperature:
                     self._attributes[DeviceAttributes.temperature] = (
-                        MideaDBDevice._temperature.get(value, value)
+                        MideaDBDevice._temperature | self._profile_temperatures
+                    ).get(
+                        value,
+                        value,
                     )
                 # parse progress
                 elif attr == DeviceAttributes.progress:
@@ -324,6 +338,11 @@ class MideaDBDevice(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea DB device set attribute."""
+        if self._is_v41_profile and attr in (
+            DeviceAttributes.power,
+            DeviceAttributes.start,
+        ):
+            raise ValueWrongType("[db] v41 profile is read-only")
         if self._controls is not None and self._controls.supports(attr):
             message_set = self._controls.make_message(
                 attr,

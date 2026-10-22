@@ -33,12 +33,14 @@ PAUSE_COMMAND = 0
 type ControlValue = bool | int | str | None
 
 
-# Verified DB v33 only: other 0x0000 Lua versions differ in field mappings,
-# while 0x0008 variants use different frames and offsets. Verify each profile
-# before enabling these 22/54-byte commands for another model or subtype.
-# Protocol reference: wuwentao/midea-lua, lua/0xDB/T_0000_DB_33.lua.
+# Only the DB v33 control profile is verified for writes. DB v41 is decoded
+# read-only. Verify each profile before enabling commands for another model.
+# Protocol reference: wuwentao/midea-lua, lua/0xDB/T_0000_DB_33.lua and
+# T_0000_DB_41.lua.
 PROFILE_MODEL = "38131140"
 PROFILE_SUBTYPE = 13145
+PROFILE_V41_MODEL = "38132386"
+PROFILE_V41_SUBTYPE = 0
 STATUS_IDLE = 0
 STATUS_STANDBY = 1
 STATUS_END = 4
@@ -143,6 +145,110 @@ PROGRAMS = {
     8: "sport_clothes",
     147: "yoga",
     145: "quick_drying_clothes",
+}
+
+V41_PROGRAMS = {
+    0x00: "cotton",
+    0x01: "eco",
+    0x02: "fast_wash",
+    0x03: "mixed_wash",
+    0x04: "fiber",
+    0x05: "wool",
+    0x06: "enzyme",
+    0x07: "ssp",
+    0x08: "sport_clothes",
+    0x09: "single_dehytration",
+    0x0A: "rinsing_dehydration",
+    0x0B: "big",
+    0x0C: "baby_clothes",
+    0x0D: "underwear",
+    0x0E: "outdoor",
+    0x0F: "down_jacket",
+    0x10: "color",
+    0x11: "intelligent",
+    0x12: "quick_wash",
+    0x13: "kids",
+    0x14: "water_cotton",
+    0x15: "air_wash",
+    0x16: "single_drying",
+    0x17: "fast_wash_30",
+    0x18: "fast_wash_60",
+    0x19: "water_intelligent",
+    0x1A: "water_steep",
+    0x1B: "water_fast_wash_30",
+    0x1C: "shirt",
+    0x1D: "steep",
+    0x1E: "new_water_cotton",
+    0x1F: "water_mixed_wash",
+    0x20: "water_fiber",
+    0x21: "water_kids",
+    0x22: "water_underwear",
+    0x23: "specialist",
+    0x24: "water_eco",
+    0x25: "wash_drying_60",
+    0x26: "self_wash_5",
+    0x27: "fast_wash_min",
+    0x28: "mixed_wash_min",
+    0x29: "dehydration_min",
+    0x2A: "self_wash_min",
+    0x2B: "baby_clothes_min",
+    0x2C: "prevent_allergy",
+    0x2D: "cold_wash",
+    0x2E: "soft_wash",
+    0x2F: "remove_mite_wash",
+    0x30: "water_intense_wash",
+    0x31: "fast_dry",
+    0x32: "water_outdoor",
+    0x33: "spring_autumn_wash",
+    0x34: "summer_wash",
+    0x35: "winter_wash",
+    0x36: "jean",
+    0x37: "new_clothes_wash",
+    0x38: "silk",
+    0x39: "insight_wash",
+    0x3A: "fitness_clothes",
+    0x3B: "mink",
+    0x3C: "fresh_air",
+    0x3D: "bucket_dry",
+    0x3E: "jacket",
+    0x3F: "bath_towel",
+    0x40: "night_fresh_wash",
+    0x50: "diy0",
+    0x51: "diy1",
+    0x52: "diy2",
+    0x60: "heart_wash",
+    0x61: "water_cold_wash",
+    0x62: "water_prevent_allergy",
+    0x63: "water_remove_mite_wash",
+    0x64: "water_ssp",
+    0x65: "silk_wash",
+    0x66: "standard",
+    0x67: "green_wool",
+    0x68: "cook_wash",
+    0x69: "fresh_remove_wrinkle",
+    0x6A: "steam_sterilize_wash",
+    0x6B: "aromatherapy",
+    0x6C: "eco_40_60",
+    0x6D: "steam_care",
+    0x6E: "allergy_care",
+    0x6F: "greatwaves",
+    0x70: "sterilize_wash",
+    0x71: "wash45",
+    0x72: "quick12",
+    0x73: "bulky",
+    0x74: "whites",
+    0x75: "towels",
+    0x76: "delicates",
+    0x77: "drum_clean",
+    0x80: "wash_and_dry",
+    0x81: "auto_dry",
+    0x82: "time_dry",
+    0xFE: "love",
+}
+
+V41_TEMPERATURES = {
+    0x08: "90",
+    0x09: "50",
 }
 
 TIME_FIELDS = {
@@ -435,7 +541,7 @@ class DBControls:
         )
 
     def remaining_minutes(self) -> int:
-        """Read the verified profiles' little-endian program duration in minutes."""
+        """Read the verified profile's little-endian program duration in minutes."""
         return int.from_bytes(
             self.body[REMAINING_TIME_OFFSET:REMAINING_TIME_END],
             "little",
