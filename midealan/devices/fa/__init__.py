@@ -37,12 +37,18 @@ _LOGGER = logging.getLogger(__name__)
 DEFAULT_NEW_SWING_ANGLE = 1275
 INVALID_MODE_CODE = 0
 MAX_LEGACY_SWING_MODE = 6
+# Models whose Lua uses the 54-byte protocol v5 set frame (MessageCB4Set).
+# 56011C99 shares 56011CB4's framing byte-for-byte (same body length, invalid
+# marker bytes, and Ecology mode); it only adds cloud-side lr_swing/ud_swing
+# convenience keys that map onto the same swing bytes.
+MODE_CB4_PROTOCOL_MODELS = {"56011CB4", "56011C99"}
 MODE_NEW_PROTOCOL_MODELS = {
     "560000F3": FA_MESSAGE_PROTOCOL,
     "56011CB4": FA_MESSAGE_PROTOCOL,
+    "56011C99": FA_MESSAGE_PROTOCOL,
     "56011CEC": FA_MESSAGE_PROTOCOL_V6,
 }
-MODE_ECOLOGY_MODELS = {"56011CB4", "56011CEC"}
+MODE_ECOLOGY_MODELS = {"56011CB4", "56011C99", "56011CEC"}
 MODE_OFFICIAL_V6_MODELS = {"56011CEC"}
 # Model 56000211 reports raw mode 4 with the additional power-mode bit set.
 MODE_LEGACY_SET_OVERRIDES = {
@@ -532,6 +538,8 @@ class MideaFADevice(MideaDevice):
         is_v6 = self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
         current_mode = self._attributes[DeviceAttributes.oscillation_mode]
         if attr == DeviceAttributes.oscillate:
+            # `oscillate` is the horizontal-axis control. Vertical swing is an
+            # independent attribute and must remain unchanged when it is toggled.
             message.oscillate = bool(value)
             if value:
                 message.oscillation_angle = (
@@ -539,10 +547,9 @@ class MideaFADevice(MideaDevice):
                     if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
                     else DEFAULT_NEW_SWING_ANGLE
                 )
-                message.oscillation_mode = "oscillation"
             else:
                 message.oscillation_angle = 0
-                message.oscillation_mode = "oscillation"
+            message.oscillation_mode = "oscillation"
         elif attr == DeviceAttributes.oscillation_mode:
             if value in {"off", "", None}:
                 message.oscillate = False
@@ -662,7 +669,7 @@ class MideaFADevice(MideaDevice):
             MessageV6Set
             if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
             else MessageCB4Set
-            if self.model == "56011CB4"
+            if self.model in MODE_CB4_PROTOCOL_MODELS
             else MessageNewSet
         )
         return message_type(self._message_protocol_version, self.subtype)
