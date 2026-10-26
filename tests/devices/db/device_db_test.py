@@ -138,8 +138,8 @@ class TestMideaDBDevice:
         "identity",
         [
             {"manufacturer_code": "0008"},
-            {"cloud_name": "Toshiba Iolife"},
-            {"cloud_name": "TSmartLife"},
+            {"manufacturer_code": "0008", "cloud_name": "Toshiba Iolife"},
+            {"manufacturer_code": "0008", "cloud_name": "TSmartLife"},
         ],
     )
     def test_toshiba_query_status_and_read_only_policy(
@@ -148,9 +148,8 @@ class TestMideaDBDevice:
     ) -> None:
         """Select, decode, and keep the Toshiba DB profile read-only."""
         args = device_args("toshiba", 0)
-        if "manufacturer_code" in identity:
-            args["manufacturer_code"] = identity["manufacturer_code"]
-        else:
+        args["manufacturer_code"] = identity["manufacturer_code"]
+        if "cloud_name" in identity:
             args["cloud_name"] = identity["cloud_name"]
         device = MideaDBDevice(customize="", **args)
         assert device._controls is None
