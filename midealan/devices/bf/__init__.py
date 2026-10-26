@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any, Unpack
 
 from midealan.const import DeviceType
-from midealan.device import MideaDeviceInitKwargs, ToshibaDevice
+from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import MessageRequest, MessageType, ToshibaFrame
 
 from .message import (
@@ -153,8 +153,10 @@ _INT_ATTRS: frozenset[DeviceAttributes] = frozenset(
 )
 
 
-class MideaBFDevice(ToshibaDevice):
+class MideaBFDevice(MideaDevice):
     """Midea BF device."""
+
+    TOSHIBA_SUPPORTED = True
 
     TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
         (MessageType.query, MessageType.notify1),
