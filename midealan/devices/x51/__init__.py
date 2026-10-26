@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Any, Unpack
 
 from midealan.const import DeviceType
-from midealan.device import MideaDeviceInitKwargs, ToshibaDevice
+from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import MessageRequest, MessageType, ToshibaFrame
 
 from .message import MessageQueryBase, MessageQueryReserved, MessageQuerySchedule
@@ -54,8 +54,10 @@ class DeviceAttributes(StrEnum):
     error_code = "error_code"
 
 
-class MideaX51Device(ToshibaDevice):
+class MideaX51Device(MideaDevice):
     """Toshiba 0x51 device."""
+
+    TOSHIBA_SUPPORTED = True
 
     TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
         (*TOSHIBA_STATUS_FRAME_TYPES, MessageType.exception),

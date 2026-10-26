@@ -20,7 +20,6 @@ from midealan.device import (
     MessageResult,
     MideaDevice,
     NoSupportedProtocol,
-    ToshibaDevice,
 )
 from midealan.exceptions import SocketException
 from midealan.message import (
@@ -38,8 +37,10 @@ class _DictDevice(MideaDevice):
     modes: ClassVar[dict[int, str]] = {1: "auto", 2: "cool"}
 
 
-class _ToshibaTestDevice(ToshibaDevice):
+class _ToshibaTestDevice(MideaDevice):
     """Concrete Toshiba device for shared protocol-selection tests."""
+
+    TOSHIBA_SUPPORTED = True
 
     def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
         """Accept one test body and expose the selected wire type."""
@@ -175,10 +176,16 @@ class TestMideaDevice:
 
     @pytest.mark.parametrize(
         "identity",
-        [{"manufacturer_code": "0008"}, {"cloud_name": "Toshiba Iolife"}],
+        [
+            {"manufacturer_code": "0008"},
+            {"manufacturer_code": "0008", "cloud_name": "Toshiba Iolife"},
+            {"manufacturer_code": "0008", "cloud_name": "TSmartLife"},
+            {"manufacturer_code": "\x000008\x00"},
+            {"manufacturer_code": " 0008 "},
+        ],
     )
     def test_toshiba_identity_selects_protocol(self, identity: dict[str, str]) -> None:
-        """Select Toshiba framing from either supported identity source."""
+        """Select Toshiba framing from the normalized manufacturer code."""
         device = self._toshiba_device(**identity)
         assert device.toshiba_protocol is True
         query = device.build_toshiba_query()[0]
@@ -186,6 +193,53 @@ class TestMideaDevice:
         assert device.build_query_fallback() == []
         with pytest.raises(ValueError, match="hardware verification"):
             device.reject_toshiba_write()
+
+    @pytest.mark.parametrize("cloud_name", ["Toshiba Iolife", "TSmartLife"])
+    @pytest.mark.parametrize("manufacturer_code", ["", "0000", "1234"])
+    def test_cloud_name_does_not_replace_manufacturer_identity(
+        self,
+        cloud_name: str,
+        manufacturer_code: str,
+    ) -> None:
+        """Use device identity rather than its account name to select framing."""
+        device = self._toshiba_device(
+            manufacturer_code=manufacturer_code,
+            cloud_name=cloud_name,
+        )
+        assert device.toshiba_protocol is False
+        assert len(device.build_query_fallback()) == 1
+
+    @pytest.mark.parametrize("manufacturer_code", ["0008", "1234"])
+    def test_family_without_toshiba_decoder_preserves_original_query_behavior(
+        self,
+        manufacturer_code: str,
+    ) -> None:
+        """Identify Toshiba independently of an appliance family's body support."""
+        device = MideaDevice(
+            name="Test Device",
+            device_id=1,
+            device_type=DeviceType.A1,
+            ip_address="192.0.2.1",
+            port=6444,
+            token=DEFAULT_KEYS[99]["token"],
+            key=DEFAULT_KEYS[99]["key"],
+            device_protocol=ProtocolVersion.V3,
+            model="test_model",
+            subtype=1,
+            attributes={},
+            manufacturer_code=manufacturer_code,
+        )
+        assert device.toshiba_protocol is (manufacturer_code == "0008")
+        assert device.build_query_fallback() == []
+        assert device.build_query_fallback_stages() == []
+        frame = encode_toshiba_frame(DeviceType.A1, MessageType.query, b"\x00")
+        assert device.process_toshiba_message(bytes(frame)) is None
+        with pytest.raises(NotImplementedError):
+            device.process_toshiba_frame(
+                ToshibaFrame(int(DeviceType.A1), MessageType.query, b"\x00"),
+            )
+        device._last_response_toshiba = None
+        assert device._is_query_response_valid(MagicMock(spec=MessageRequest)) is True
 
     def test_toshiba_traffic_selects_and_validates_protocol(self) -> None:
         """Select Toshiba only after a complete supported status response."""
