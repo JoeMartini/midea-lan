@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
-from midealan.device import MideaDeviceInitKwargs, ToshibaDevice
+from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import (
     MessageRequest,
     MessageType,
@@ -69,8 +69,10 @@ class DeviceAttributes(StrEnum):
     variable_mode = "variable_mode"
 
 
-class MideaCADevice(ToshibaDevice):
+class MideaCADevice(MideaDevice):
     """Midea CA device."""
+
+    TOSHIBA_SUPPORTED = True
 
     TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
         (MessageType.query, MessageType.notify1),
