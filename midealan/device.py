@@ -113,6 +113,13 @@ class MideaDeviceInitKwargs(TypedDict):
 class MideaDevice(threading.Thread):
     """Midea device."""
 
+    TOSHIBA_MANUFACTURER_CODE = "0008"
+    # Identity selects the protocol; each family opts in its body decoder.
+    TOSHIBA_SUPPORTED: ClassVar[bool] = False
+    TOSHIBA_RESPONSE_FRAME_TYPES: ClassVar[frozenset[int]] = frozenset(
+        (MessageType.query,),
+    )
+
     def __init__(
         self,
         *,
@@ -175,6 +182,11 @@ class MideaDevice(threading.Thread):
         # add the device at setup time (it is not part of the device payload).
         cloud_name = kwargs.get("cloud_name")
         self._cloud_name = (cloud_name.strip() or None) if cloud_name else None
+        self._toshiba_protocol = (
+            self.manufacturer_code == self.TOSHIBA_MANUFACTURER_CODE
+        )
+        self._last_response_toshiba: bool | None = False
+        self._selected_toshiba_wire_type: DeviceType | int | None = None
 
     _fahrenheit_default: ClassVar[bool] = False
 
@@ -935,9 +947,13 @@ class MideaDevice(threading.Thread):
         """Return the delay between periodic query sends."""
         return PERIODIC_QUERY_DELAY
 
-    def _is_query_response_valid(self, _cmd: MessageRequest) -> bool:
+    def _is_query_response_valid(self, cmd: MessageRequest) -> bool:
         """Return whether the received response belongs to the queried family."""
-        return True
+        if not self.TOSHIBA_SUPPORTED:
+            return True
+        if isinstance(cmd, ToshibaMessageRequest):
+            return self._last_response_toshiba is True
+        return self._last_response_toshiba is False
 
     def _should_defer_query(self, _cmd: MessageRequest) -> bool:
         """Return whether a timed-out query should be retried later."""
@@ -957,9 +973,11 @@ class MideaDevice(threading.Thread):
         queries). Before declaring the protocol unsupported, refresh_status()
         probes this list once per connection, so such a device is detected
         instead of being left unavailable until the integration is reloaded.
-        The base class has no alternative family, which keeps the previous
-        behaviour for every other device.
+        Only families with a Toshiba body decoder opt in the Toshiba probe.
+        Other families retain their previous behaviour.
         """
+        if self.TOSHIBA_SUPPORTED and not self.toshiba_protocol:
+            return self.build_toshiba_query()
         return []
 
     def build_query_fallback_stages(self) -> list[list]:
@@ -1296,34 +1314,6 @@ class MideaDevice(threading.Thread):
             ret[str(status)] = self._attributes[status]
         return ret
 
-
-class ToshibaDevice(MideaDevice):
-    """Midea device with reusable Toshiba UART protocol selection."""
-
-    TOSHIBA_MANUFACTURER_CODE = "0008"
-    TOSHIBA_CLOUD_NAMES: ClassVar[frozenset[str]] = frozenset(
-        ("Toshiba Iolife", "TSmartLife"),
-    )
-    TOSHIBA_RESPONSE_FRAME_TYPES: ClassVar[frozenset[int]] = frozenset(
-        (MessageType.query,),
-    )
-
-    def __init__(
-        self,
-        *,
-        device_type: DeviceType,
-        attributes: dict,
-        **kwargs: Unpack[MideaDeviceInitKwargs],
-    ) -> None:
-        """Select Toshiba framing from explicit manufacturer metadata."""
-        super().__init__(device_type=device_type, attributes=attributes, **kwargs)
-        self._toshiba_protocol = (
-            self.manufacturer_code == self.TOSHIBA_MANUFACTURER_CODE
-            or self.cloud_name in self.TOSHIBA_CLOUD_NAMES
-        )
-        self._last_response_toshiba: bool | None = False
-        self._selected_toshiba_wire_type: DeviceType | int | None = None
-
     @property
     def toshiba_protocol(self) -> bool:
         """Return whether validated identity or traffic selected Toshiba framing."""
@@ -1350,12 +1340,10 @@ class ToshibaDevice(MideaDevice):
             ),
         ]
 
-    def build_query_fallback(self) -> list[MessageRequest]:
-        """Probe Toshiba framing when an unidentified device ignores Midea queries."""
-        return [] if self.toshiba_protocol else self.build_toshiba_query()
-
     def process_toshiba_message(self, msg: bytes) -> dict[str, Any] | None:
         """Validate, parse, and atomically select the Toshiba protocol family."""
+        if not self.TOSHIBA_SUPPORTED:
+            return None
         is_toshiba_frame = msg.startswith(TOSHIBA_FRAME_MAGIC)
         if not self.toshiba_protocol and not is_toshiba_frame:
             self._last_response_toshiba = False
@@ -1391,14 +1379,8 @@ class ToshibaDevice(MideaDevice):
         return status
 
     def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
-        """Parse a validated device-specific Toshiba frame."""
+        """Parse a Toshiba body when the appliance family provides a decoder."""
         raise NotImplementedError
-
-    def _is_query_response_valid(self, cmd: MessageRequest) -> bool:
-        """Require the response to match the query envelope family."""
-        if isinstance(cmd, ToshibaMessageRequest):
-            return self._last_response_toshiba is True
-        return self._last_response_toshiba is False
 
     def reject_toshiba_write(self) -> None:
         """Reject unverified writes while a device uses Toshiba framing."""
