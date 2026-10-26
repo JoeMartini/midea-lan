@@ -734,7 +734,14 @@ class TestMideaCDDevice:
 
     @pytest.mark.parametrize(
         ("raw", "expected"),
-        [(128, 49.0), (129, 49.5), (190, -48.0), (254, -16.0)],
+        [
+            (128, 49.0),
+            (129, 49.5),
+            (189, 79.5),
+            (190, -48.0),
+            (254, -16.0),
+            (255, 112.5),
+        ],
     )
     def test_2530001n_negative_temperature_sensor_decoding(
         self,
@@ -762,9 +769,30 @@ class TestMideaCDDevice:
 
         assert status[DeviceAttributes.current_temperature.value] == 128.0
 
+    def test_2530001n_zero_current_temperature_preserves_positive_value(self) -> None:
+        """An uninitialized tank reading does not replace a known value."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = 128
+        body[55] = 1
+        device.process_message(_build_message(MessageType.query, body))
+
+        body[4] = 0
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 49.0
+        assert device.attributes[DeviceAttributes.current_temperature] == 49.0
+
     @pytest.mark.parametrize(
         ("negative_support", "raw", "expected"),
-        [(True, 68, 19.0), (False, 68, 9.0)],
+        [
+            (True, 68, 19.0),
+            (True, 189, 79.5),
+            (True, 190, -48.0),
+            (True, 254, -16.0),
+            (True, 255, 112.5),
+            (False, 68, 9.0),
+        ],
     )
     def test_2530001n_outdoor_temperature_uses_capability_encoding(
         self,

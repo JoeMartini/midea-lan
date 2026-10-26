@@ -40,6 +40,7 @@ NEGATIVE_TEMPERATURE_RAW_MIN = 190
 NEGATIVE_TEMPERATURE_RAW_MAX = 254
 NEGATIVE_TEMPERATURE_RAW_OFFSET = 254.0
 NEGATIVE_TEMPERATURE_CELSIUS_OFFSET = 16.0
+LEGACY_OUTDOOR_TEMPERATURE_OFFSET = 25.0
 MODE_NONE = 0x00
 
 
@@ -316,6 +317,75 @@ class MideaCDDevice(MideaDevice):
             OLD_PROTOCOL_TEMPERATURE_DIVISOR
         )
 
+    def _process_2530001n_temperature(
+        self,
+        message: MessageCDResponse,
+        attr: DeviceAttributes,
+        raw_value: float,
+        new_status: dict[str, Any],
+    ) -> bool:
+        """Decode and store a 2530001N tank or outdoor temperature.
+
+        Protocol and plugin evidence:
+        https://github.com/wuwentao/midea_ac_lan/issues/1015#issuecomment-6315383580
+        https://github.com/wuwentao/midea_ac_lan/issues/1015#issuecomment-6315783800
+        """
+        if self.model != "2530001N" or attr not in [
+            DeviceAttributes.current_temperature,
+            DeviceAttributes.outdoor_temperature,
+        ]:
+            return False
+
+        # The 2530001N plugin gates its sensor conversion on minus_support.
+        # Preserve half-degree precision and the special signed-byte encoding
+        # for supported devices.
+        negative_temperature_supported = getattr(
+            message,
+            DeviceAttributes.support_negative_temperature,
+            None,
+        )
+        if negative_temperature_supported is True:
+            parsed = self._2530001n_temperature(raw_value)
+        elif (
+            negative_temperature_supported is False
+            and attr == DeviceAttributes.current_temperature
+        ):
+            # The official plugin displays the raw tank value if this
+            # capability is absent.
+            parsed = raw_value
+        elif (
+            negative_temperature_supported is False
+            and attr == DeviceAttributes.outdoor_temperature
+        ):
+            parsed = (
+                raw_value / OLD_PROTOCOL_TEMPERATURE_DIVISOR
+                - LEGACY_OUTDOOR_TEMPERATURE_OFFSET
+            )
+        else:
+            parsed = self._value_to_temperature(
+                raw_value,
+                force_fahrenheit=(attr == DeviceAttributes.outdoor_temperature),
+                force_old=(attr == DeviceAttributes.current_temperature),
+            )
+
+        if attr == DeviceAttributes.current_temperature:
+            # A zero raw byte is still an invalid/uninitialized reading;
+            # negative decoded values are valid only when the device
+            # advertises negative-temperature support.
+            if raw_value == 0:
+                parsed = 0.0
+            if parsed <= 0 and not (
+                raw_value > 0 and negative_temperature_supported is True
+            ):
+                existing = self._attributes.get(attr)
+                if isinstance(existing, int | float) and existing > 0:
+                    new_status[str(attr)] = existing
+                    return True
+
+        self._attributes[attr] = parsed
+        new_status[str(attr)] = parsed
+        return True
+
     def _temperature_to_value(self, value: float) -> float:
         # celsius to fahrenheit
         if self._fahrenheit:
@@ -509,56 +579,12 @@ class MideaCDDevice(MideaDevice):
                     self._attributes[attr] = parsed
                     new_status[str(attr)] = parsed
                     continue
-                # The 2530001N plugin gates its sensor conversion on
-                # minus_support. Preserve half-degree precision and the
-                # special signed-byte encoding for supported devices.
-                if self.model == "2530001N" and attr in [
-                    DeviceAttributes.current_temperature,
-                    DeviceAttributes.outdoor_temperature,
-                ]:
-                    negative_temperature_supported = getattr(
-                        message,
-                        "support_negative_temperature",
-                        None,
-                    )
-                    if negative_temperature_supported is True:
-                        parsed = self._2530001n_temperature(raw_value)
-                    elif (
-                        negative_temperature_supported is False
-                        and attr == DeviceAttributes.current_temperature
-                    ):
-                        # The official plugin displays the raw tank value if
-                        # this capability is absent.
-                        parsed = raw_value
-                    elif (
-                        negative_temperature_supported is False
-                        and attr == DeviceAttributes.outdoor_temperature
-                    ):
-                        parsed = raw_value / OLD_PROTOCOL_TEMPERATURE_DIVISOR - 25.0
-                    else:
-                        parsed = self._value_to_temperature(
-                            raw_value,
-                            force_fahrenheit=(
-                                attr == DeviceAttributes.outdoor_temperature
-                            ),
-                            force_old=(attr == DeviceAttributes.current_temperature),
-                        )
-                    if attr == DeviceAttributes.current_temperature:
-                        # A zero raw byte is still an invalid/uninitialized
-                        # reading; negative decoded values are valid only
-                        # when the device advertises negative-temperature
-                        # support.
-                        if raw_value == 0:
-                            parsed = 0.0
-                        if parsed <= 0 and not (
-                            raw_value > 0 and negative_temperature_supported is True
-                        ):
-                            existing = self._attributes.get(attr)
-                            if isinstance(existing, int | float) and existing > 0:
-                                new_status[str(attr)] = existing
-                                continue
-                    self._attributes[attr] = parsed
-                    new_status[str(attr)] = parsed
+                if self._process_2530001n_temperature(
+                    message,
+                    attr,
+                    raw_value,
+                    new_status,
+                ):
                     continue
                 # process temperature family
                 if attr in [
