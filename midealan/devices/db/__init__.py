@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
-from midealan.device import MideaDeviceInitKwargs, ToshibaDevice
+from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.devices.toshiba import (
     TOSHIBA_WASHER_STATUS_RUNNING,
     decode_toshiba_washer_status,
@@ -71,8 +71,10 @@ class DeviceAttributes(StrEnum):
     dirty_degree = "dirty_degree"
 
 
-class MideaDBDevice(ToshibaDevice):
+class MideaDBDevice(MideaDevice):
     """Midea DB device."""
+
+    TOSHIBA_SUPPORTED = True
 
     TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
         (MessageType.set, MessageType.query, MessageType.notify1),
