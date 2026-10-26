@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
-from midealan.device import MideaDeviceInitKwargs, ToshibaDevice
+from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import MessageRequest, ToshibaFrame
 
 from .message import MessageEAResponse, MessageQuery
@@ -31,8 +31,10 @@ class DeviceAttributes(StrEnum):
     progress = "progress"
 
 
-class MideaEADevice(ToshibaDevice):
+class MideaEADevice(MideaDevice):
     """Midea EA device."""
+
+    TOSHIBA_SUPPORTED = True
 
     TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
         TOSHIBA_BASE_FRAME_TYPES,
