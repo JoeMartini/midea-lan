@@ -207,6 +207,16 @@ STALE_C0_TEMPERATURE_ATTRIBUTES = (
     DeviceAttributes.indoor_temperature,
     DeviceAttributes.outdoor_temperature,
 )
+# These models report the live display state in A0 notifications; their C0
+# query replies can contain an older value for the same field. Keep this
+# model-specific until other devices are confirmed to share the behavior.
+# https://github.com/wuwentao/midea_ac_lan/issues/1147
+A0_SCREEN_DISPLAY_MODELS = frozenset(
+    {
+        ("00000Q1B", 44204),
+        ("00000Q1F", 44204),
+    },
+)
 TIMER_ATTRIBUTES = (
     DeviceAttributes.power_on_timer,
     DeviceAttributes.power_off_timer,
@@ -401,9 +411,9 @@ class MideaACDevice(MideaDevice):
         self._uses_new_protocol_temperature = (
             str(self.model) in NEW_PROTOCOL_TEMPERATURE_MODELS
         )
-        # Once 0x7e-derived temperatures are seen, ignore stale C0 temperature
-        # fields to avoid brief UI flicker caused by query ordering.
+        # Prefer verified live sources over stale fields in later C0 replies.
         self._prefer_new_protocol_temperature: bool = False
+        self._prefer_a0_screen_display: bool = False
         self.set_customize(customize)
 
     @property
@@ -672,8 +682,14 @@ class MideaACDevice(MideaDevice):
         if getattr(message, "has_new_protocol_temperature", False):
             self._prefer_new_protocol_temperature = True
 
+        if self._model_key in A0_SCREEN_DISPLAY_MODELS and body_type == ListTypes.A0:
+            self._prefer_a0_screen_display = True
+
         is_stale_c0_temperature = (
             self._prefer_new_protocol_temperature and body_type == ListTypes.C0
+        )
+        is_stale_c0_screen_display = (
+            self._prefer_a0_screen_display and body_type == ListTypes.C0
         )
         if body_type in NEW_PROTOCOL_BODY_TYPES and hasattr(
             message,
@@ -731,6 +747,11 @@ class MideaACDevice(MideaDevice):
         for attr in self._attributes:
             if hasattr(message, str(attr)):
                 if is_stale_c0_temperature and attr in STALE_C0_TEMPERATURE_ATTRIBUTES:
+                    continue
+                if (
+                    is_stale_c0_screen_display
+                    and attr == DeviceAttributes.screen_display
+                ):
                     continue
                 if is_stale_c0_timer and attr in TIMER_ATTRIBUTES:
                     continue

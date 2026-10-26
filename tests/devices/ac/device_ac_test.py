@@ -1473,6 +1473,59 @@ class TestMideaACDevice:
             assert self.device.attributes[DeviceAttributes.target_temperature] == 27.0
             assert self.device.attributes[DeviceAttributes.indoor_temperature] == 28.8
 
+    @pytest.mark.parametrize("model", ["00000Q1B", "00000Q1F"])
+    def test_process_message_prefers_a0_screen_display_over_stale_c0(
+        self,
+        model: str,
+    ) -> None:
+        """Keep A0 display state when a later C0 reply disagrees."""
+        device = self._make_device(model, 44204)
+        a0_message = SimpleNamespace(
+            body_type=ListTypes.A0,
+            power=True,
+            screen_display=True,
+        )
+        c0_message = SimpleNamespace(
+            body_type=ListTypes.C0,
+            power=True,
+            screen_display=False,
+        )
+
+        with patch(
+            "midealan.devices.ac.MessageACResponse",
+            side_effect=[a0_message, c0_message],
+        ):
+            first = device.process_message(b"")
+            second = device.process_message(b"")
+
+        assert first[DeviceAttributes.screen_display.value]
+        assert DeviceAttributes.screen_display.value not in second
+        assert device.attributes[DeviceAttributes.screen_display]
+
+    def test_process_message_does_not_latch_a0_display_for_other_models(self) -> None:
+        """Keep C0 display updates enabled for unverified models."""
+        device = self._make_device("other_model", 44204)
+        a0_message = SimpleNamespace(
+            body_type=ListTypes.A0,
+            power=True,
+            screen_display=True,
+        )
+        c0_message = SimpleNamespace(
+            body_type=ListTypes.C0,
+            power=True,
+            screen_display=False,
+        )
+
+        with patch(
+            "midealan.devices.ac.MessageACResponse",
+            side_effect=[a0_message, c0_message],
+        ):
+            device.process_message(b"")
+            second = device.process_message(b"")
+
+        assert second[DeviceAttributes.screen_display.value] is False
+        assert not device.attributes[DeviceAttributes.screen_display]
+
     @staticmethod
     def _new_protocol_temperature_response() -> bytes:
         """Build a B1 query frame carrying a valid 0x7e temperature payload."""
