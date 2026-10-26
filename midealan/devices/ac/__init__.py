@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, Unpack, cast
 
 from midealan.const import MAX_BYTE_VALUE, DeviceType
-from midealan.device import MideaDeviceInitKwargs, ToshibaDevice
+from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import (
     ListTypes,
     MessageBase,
@@ -223,8 +223,10 @@ NEW_PROTOCOL_BODY_TYPES = (ListTypes.B0, ListTypes.B1, ListTypes.B5)
 TOSHIBA_D0_MIN_BODY_LENGTH = 21
 
 
-class MideaACDevice(ToshibaDevice):
+class MideaACDevice(MideaDevice):
     """Midea AC device."""
+
+    TOSHIBA_SUPPORTED = True
 
     TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
         (
